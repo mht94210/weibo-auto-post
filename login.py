@@ -6,12 +6,15 @@
   python3 login.py --help       # 参数说明
   python3 login.py --self-test  # 离线自查(不联网): 解析/二维码渲染/存取, 不登录
 
-登录流程(接口依据, 见 LOGIN.md; 2026-07 有第三方实测探针佐证, 本工具尚未真跑过):
+登录流程(接口依据, 见 LOGIN.md; 取码一步已于 2026-11-18 在本地实测通过,
+轮询/换登录态尚未真跑过):
   1. 取二维码:
-     GET https://login.sina.com.cn/sso/qrcode/image?entry=sso&callback=STK_<毫秒戳>
-     返回 JSONP, data 里有 qrid(轮询用) 和 image(二维码图地址,
+     GET https://login.sina.com.cn/sso/qrcode/image?entry=sso&callback=STK_<毫秒戳>&size=180
+     返回 JSONP `window.STK_xxx && STK_xxx({...});`(末尾带分号, 解析要宽容),
+     成功 retcode=20000000, data 里有 qrid(轮询用) 和 image(二维码图地址,
      https://v2.qr.weibo.cn/inf/gen?...&data=https://passport.weibo.cn/signin/qrcode/scan?qr=...);
      微博登录页 https://passport.weibo.com/sso/signin?entry=wapsso 展示的也是同一张图.
+     注意: size 必传, 不传返回 retcode=50114017 "size error"(2026-11-18 本地实测).
   2. 轮询扫码状态(每 2 秒):
      GET https://login.sina.com.cn/sso/qrcode/check?entry=sso&qrid=<qrid>&callback=STK_<毫秒戳>
      retcode: 50114001 未扫 / 50114002 已扫未确认 / 20000000 已确认 / 50114004 已失效.
@@ -21,8 +24,9 @@
          &callback=STK_<毫秒戳>&action=login
      再逐个 GET 返回里的跨域登录地址(含 passport.weibo.com/wbsso/login),
      浏览器/Session 里的 Cookie 即被置为登录态(SUB/SUBP/SCF 等).
-     (新版页面另有 /sso/v2/qrcode/image、/sso/v2/qrcode/check, 成功后直接给 data.url;
-     本脚本先走上面这条 2026-07 实测过的 v1 链路, 若返回里有 data.url 则改走它.)
+     (另有 /sso/v2/qrcode/image、/sso/v2/qrcode/check; 2026-11-18 本地实测 v2 与 v1
+     行为相同: 都要传 size=180, 成功都返回 image+qrid, 不是之前推测的 data.url.
+     本脚本先走 v1 链路, 若确认返回里有 data.url 则改走它.)
   4. 存登录态: .local/weibo-session.json, 与 agentic-weibo-cli 相同的 version 2 结构,
      poster.py 的 _load_cookie() 只读其中 SUB/SUBP/SCF.
   5. 验登录态: 调 poster.WeiboPoster.check_session(), GET https://m.weibo.cn/api/config,
@@ -99,12 +103,18 @@ def _stk() -> str:
 
 
 def parse_jsonp(text: str) -> dict:
-    """解析 STK_xxx({...}) 或裸 JSON, 返回 dict; 解析失败抛 LoginError."""
+    """解析 STK_xxx({...}) 或裸 JSON, 返回 dict; 解析失败抛 LoginError.
+
+    宽容写法: 直接取第一个 '{' 到最后一个 '}' 之间的 JSON.
+    微博现在返回 `window.STK_xxx && STK_xxx({...});` 形式(末尾带分号),
+    旧的 `(...)$` 正则会被分号顶掉而误判为非 JSON.
+    """
     text = (text or "").strip()
     if not text:
         raise LoginError("接口返回为空")
-    m = re.search(r"\((\{.*\})\)?\s*$", text, re.S)
-    payload = m.group(1) if m else text
+    start = text.find("{")
+    end = text.rfind("}")
+    payload = text[start:end + 1] if 0 <= start < end else text
     try:
         data = json.loads(payload)
     except ValueError as e:
@@ -146,7 +156,9 @@ class QrLogin:
         try:
             resp = self.http.get(
                 QR_IMAGE_URL,
-                params={"entry": "sso", "callback": _stk()},
+                # 注意: size 必传(2026-11-18 实测: 不传返回
+                # retcode=50114017 "size error"); 180 是登录页常用尺寸.
+                params={"entry": "sso", "callback": _stk(), "size": 180},
                 timeout=30)
         except requests.RequestException as e:
             raise LoginError(f"取二维码网络失败: {e}") from e
@@ -160,6 +172,12 @@ class QrLogin:
                 raise LoginError("取二维码: 接口直接返回图片, 但未给 qrid, 无法轮询")
             return qrid, resp.content
         data = parse_jsonp(resp.text)
+        ret = str(data.get("retcode", ""))
+        if ret and ret != "20000000":
+            # 非成功码直接报出来(只含码和 msg, 不含敏感值), 便于判断接口是否又变了.
+            # 已知: 50114017 "size error" = 缺 size 参数.
+            raise LoginError(
+                f"取二维码被拒: retcode={ret} msg={data.get('msg')!r}")
         inner = data.get("data") or {}
         if not isinstance(inner, dict):
             raise LoginError("取二维码: 返回里没有 data 对象, 接口可能变了")
@@ -446,6 +464,16 @@ def self_test() -> int:
           and (d.get("data") or {}).get("alt") == "x")
     d2 = parse_jsonp('{"retcode":50114001,"data":{}}')
     check("裸 JSON 解析", str(d2.get("retcode")) == "50114001")
+    # 真实返回形式(2026-11-18 实测): window.STK_xxx && STK_xxx({...}); 末尾带分号
+    d3 = parse_jsonp('window.STK_1795002079412 && STK_1795002079412'
+                     '({"retcode":50114017,"msg":"size error","data":{"errline":65}});')
+    check("window.STK 包装 + 末尾分号解析",
+          str(d3.get("retcode")) == "50114017" and d3.get("msg") == "size error")
+    d4 = parse_jsonp('window.STK_1795002079412 && STK_1795002079412'
+                     '({"retcode":20000000,"msg":"succ","data":{"qrid":"abc","image":"https://x/y.png"}});')
+    check("成功返回解析(qrid/image)",
+          str(d4.get("retcode")) == "20000000"
+          and (d4.get("data") or {}).get("qrid") == "abc")
     try:
         parse_jsonp("not json at all {{{")
         check("非法返回抛错", False)

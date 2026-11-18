@@ -39,8 +39,11 @@ python3 login.py --help     # 参数说明
    `https://v2.qr.weibo.cn/inf/gen?...&data=https%3A%2F%2Fpassport.weibo.cn%2Fsignin%2Fqrcode%2Fscan%3Fqr%3D...`，
    即码内容是 `passport.weibo.cn/signin/qrcode/scan?qr=<token>` 形式的扫码链接。
 2. **掘金文章《Python扫码登录微博获取cookie》**（juejin.cn/post/7013238622115594276）：
-   取码 `GET login.sina.com.cn/sso/qrcode/image?entry=sso&callback=STK_<戳>`，
-   返回 JSONP 里有 `qrid` 和二维码图地址；轮询
+   取码 `GET login.sina.com.cn/sso/qrcode/image?entry=sso&callback=STK_<戳>&size=180`，
+   返回 JSONP（`window.STK_<戳> && STK_<戳>({...});`，末尾带分号）里有 `qrid` 和二维码图地址；
+   **注意：`size` 必传**——2026-11-18 本地实测，不传返回
+   `retcode=50114017 msg="size error"`；传 `size=180` 返回
+   `retcode=20000000 msg="succ"`，`data` 里有 `image`、`qrid`。轮询
    `GET login.sina.com.cn/sso/qrcode/check?entry=sso&qrid=<qrid>&callback=STK_<戳>`，
    retcode：`50114001` 未扫、`50114002` 已扫未确认、`20000000` 已确认、`50114004` 已失效；
    已确认后取 `data.alt`，再
@@ -91,11 +94,15 @@ ASCII 渲染不解码二维码，只按像素画半方块字符；二维码图�
 
 ## 已知的未验证点（留到服务器上实测）
 
-1. **v1 链路在 2026-11 是否还通**：取码/轮询/换登录态三步都只在纸面（2021 年文章 +
-   2026-07 探针文档）上印证过，**没有在本工具上真跑过**。第一次跑 `login.py` 时，
-   若取码返回里没有 `qrid`/图地址，或轮询 retcode 不在四种之内，脚本会直接报错
-   说明原因（不含敏感值），再按 LOGIN.md 里的 v2 链路（`/sso/v2/qrcode/image`、
-   `/sso/v2/qrcode/check`）或 Playwright 方案改。
+1. **取码一步已在本地实测通过**（2026-11-18：`size=180` 取到码，PNG 180×180，
+   49×49 模块，ASCII 渲染正常；轮询一次返回 `50114001` 未扫，check 接口通）。
+   **仍未验证的是后两步**：扫码确认后的 `alt` 换登录态（`sso/login.php` + 跨域地址）
+   和最终 Cookie 是否齐全。第一次在服务器上跑 `login.py` 时，若换登录态返回异常
+   或 Cookie 缺字段，脚本会直接报错说明原因（不含敏感值），再按实测结果调。
+   另：v2 链路（`/sso/v2/qrcode/image`、`/sso/v2/qrcode/check`）2026-11-18 本地实测
+   与 v1 行为相同（不传 `size` 同样报 50114017，传 `size=180` 同样返回
+   `image` + `qrid`，不是之前推测的直接给 `data.url`），目前不需要切 v2；若 v1
+   将来失效，再考虑 Playwright 方案。
 2. **终端 ASCII 码好不好扫**：字体、行高、CloudShell 终端宽度都可能影响识别；
    扫不出来时用 `.local/weibo-qrcode.png` 图片扫。
    另：微博的二维码图中间嵌了微博 logo（`v2.qr.weibo.cn` 图片地址里带 `logo=` 参数），
