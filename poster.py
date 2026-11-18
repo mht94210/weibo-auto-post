@@ -63,16 +63,46 @@ class WeiboPoster:
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def _load_cookie(self) -> str:
+    # 发文 Cookie 按域优先级去重(同名取 m.weibo.cn 优先), 与参考实现一致
+    _DOMAIN_PRIORITY = ("m.weibo.cn", ".m.weibo.cn", "weibo.com", ".weibo.com",
+                        "passport.weibo.com", ".passport.weibo.com")
+
+    def _load_session(self) -> dict:
         if not self.session_path or not self.session_path.exists():
             raise RuntimeError(
                 "未找到登录态文件(默认 .local/weibo-session.json): "
                 "请先在服务器上扫码登录; dry-run 模式不需要登录态.")
-        data = json.loads(self.session_path.read_text(encoding="utf-8"))
-        cookies = data.get("cookies") or []
-        parts = [f"{c['name']}={c['value']}" for c in cookies
-                 if c.get("name") in ("SUB", "SUBP", "SCF") and c.get("value")]
-        if not parts:
+        return json.loads(self.session_path.read_text(encoding="utf-8"))
+
+    def _selected_cookies(self) -> list:
+        cookies = self._load_session().get("cookies") or []
+
+        def score(c):
+            try:
+                return len(self._DOMAIN_PRIORITY) - self._DOMAIN_PRIORITY.index(
+                    c.get("domain") or "")
+            except ValueError:
+                return 0
+        sel = {}
+        for c in cookies:
+            if not c.get("value"):
+                continue
+            cur = sel.get(c["name"])
+            if cur is None or score(c) > score(cur):
+                sel[c["name"]] = c
+        return [sel[k] for k in sorted(sel)]
+
+    def _csrf_token(self) -> str:
+        for key in ("XSRF-TOKEN", "X-CSRF-TOKEN", "SCF"):
+            for c in self._selected_cookies():
+                if c["name"] == key:
+                    return c["value"]
+        return ""
+
+    def _load_cookie(self) -> str:
+        parts = [f"{c['name']}={c['value']}" for c in self._selected_cookies()]
+        if not any(c["name"] in ("SUB", "SUBP", "SCF")
+                   for c in self._selected_cookies()):
             raise RuntimeError("登录态文件里没有 SUB/SUBP/SCF, 请重新扫码登录.")
         return "; ".join(parts)
 
@@ -99,9 +129,12 @@ class WeiboPoster:
                 "带图真发未验证: m.weibo.cn 传图接口字段未核实, "
                 "需登录态就绪后做 1 条真发测试确认后再接; 当前只能发纯文字.")
         cookie = self._load_cookie()
+        token = self._csrf_token()
         headers = {"Cookie": cookie,
                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                    "X-Requested-With": "XMLHttpRequest",
+                   "X-XSRF-TOKEN": token,
+                   "X-CSRF-TOKEN": token,
                    "Origin": "https://m.weibo.cn",
                    "Referer": "https://m.weibo.cn/compose/"}
         try:
@@ -136,3 +169,35 @@ class WeiboPoster:
         self._log(record)
         return PostResult(dry_run=False, ok=True, text=text,
                           weibo_id=weibo_id, url=url)
+
+    def delete(self, weibo_id: str) -> bool:
+        """删一条微博(已验证 2026-11-18): 走 weibo.com /ajax/statuses/destroy,
+        Cookie 用 .weibo.com 域优先(与发文的 m.weibo.cn 优先相反);
+        m.weibo.cn /api/statuses/destroy 已失效(404 链接无效)。"""
+        if self.dry_run:
+            return True
+        # 用 .weibo.com 优先重排
+        raw = self._load_session().get("cookies") or []
+        scored = {}
+        for c in raw:
+            if not c.get("value"):
+                continue
+            dom = c.get("domain") or ""
+            score = 2 if dom in (".weibo.com", "weibo.com") else (
+                1 if "weibo.cn" in dom else 0)
+            cur = scored.get(c["name"])
+            if cur is None or score > cur[1]:
+                scored[c["name"]] = (c["value"], score)
+        cookie = "; ".join(f"{k}={v[0]}" for k, v in sorted(scored.items()))
+        token = self._csrf_token()
+        headers = {"Cookie": cookie,
+                   "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                   "X-Requested-With": "XMLHttpRequest",
+                   "X-XSRF-TOKEN": token,
+                   "X-CSRF-TOKEN": token,
+                   "Origin": "https://weibo.com",
+                   "Referer": f"https://weibo.com/status/{weibo_id}"}
+        resp = self.http.post("https://weibo.com/ajax/statuses/destroy",
+                              headers=headers, data={"id": weibo_id},
+                              proxies=self.proxies, timeout=30)
+        return resp.status_code == 200
