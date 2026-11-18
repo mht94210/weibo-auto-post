@@ -1,0 +1,5 @@
+.local/
+__pycache__/
+*.pyc
+data/hot_cache.json
+data/used_topics.json

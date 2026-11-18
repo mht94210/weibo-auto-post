@@ -1,0 +1,39 @@
+# 微博自动发文工具配置
+# 注意: 部署到服务器前, dry_run 必须保持 true; 真发前先做 1 条真发测试.
+
+account:
+  id: "weibo_account_1"     # 1 个号先跑; 以后每加 1 个号, 复制一份配置, 单独扫码、单独走代理
+  nickname: ""               # 账号昵称(只用于日志和配图水印, 可空)
+
+# 一天 12 条, 07:30-22:30, 约 70-80 分钟一条, 每条 +-10 分钟抖动
+schedule:
+  posts_per_day: 12
+  slots: ["07:30", "08:50", "10:10", "11:30", "12:50", "14:10",
+          "15:30", "16:50", "18:10", "19:30", "20:50", "22:10"]
+  min_gap_minutes: 45
+  jitter_minutes: 10
+
+posting:
+  dry_run: true              # true=只写日志不真发; false=真发(需登录态文件)
+  max_text_len: 140
+  dedup_topics_per_day: true # 当天同一话题只用一次
+
+# 文案: 先用模板; 以后接大模型时填 llm.api_url / api_key / model
+llm:
+  enabled: false
+  api_url: ""
+  api_key: ""
+  model: ""
+
+# 配图: 先用 PIL 标题卡; 以后可接免费图库或 AI 生图
+image:
+  mode: "title_card"         # title_card | free_stock | ai_image(均未接入时回落到 title_card)
+  out_dir: "data/images"
+
+# 代理池: 先接本地免费代理列表做轮换; 免费代理不稳定, 发文前逐个验活
+proxy:
+  enabled: false             # dry-run 阶段默认关; 真发阶段再开
+  list_path: "~/workspace/proxy-api/proxies_cn.txt"
+  best_list_path: "~/workspace/proxy-api/proxies_best.txt"
+  sticky_per_account: true   # 同一账号固定用一个代理, 不要每次发都换 IP
+  check_alive_before_post: true
