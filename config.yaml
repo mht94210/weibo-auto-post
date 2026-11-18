@@ -13,6 +13,10 @@ schedule:
   min_gap_minutes: 45
   jitter_minutes: 10
 
+# 内容过滤: 用户规则(2026-11-18)——带政治内容的话题一律不发, 直接跳过换下一条
+content_filter:
+  skip_political: true       # true=过滤政治话题(关键词见 content_filter.py)
+
 posting:
   dry_run: true              # true=只写日志不真发; false=真发(需登录态文件)
   max_text_len: 140

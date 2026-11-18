@@ -18,6 +18,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
+from content_filter import filter_political, political_reason
 from generator import generate
 from hotsearch import fetch_hot_top, now_beijing_iso
 from images import make_title_card
@@ -52,13 +53,29 @@ def main() -> int:
     topics, source = fetch_hot_top(10, cache)
     print(f"[{now_beijing_iso()}] 热搜来源: {source}, 共 {len(topics)} 条")
 
+    # 1b. 内容过滤: 带政治内容的话题一律不发(用户规则 2026-11-18)
+    all_topics = list(topics)
+    if (cfg.get("content_filter") or {}).get("skip_political", True):
+        topics, skipped = filter_political(topics)
+        for t, reason in skipped:
+            print(f"  跳过政治话题: 第{t.rank}名 {t.word} (命中: {reason})")
+        if not topics:
+            print("前十话题全部含政治内容, 本时段跳过")
+            return 0
+        print(f"  过滤后剩余 {len(topics)} 条可用话题")
+
     # 2. 选话题: 指定排名优先, 否则挑当天未用的第一条
     dedup = TopicDedup(BASE / "data" / "used_topics.json")
     if args.topic_rank:
         topic = next((t for t in topics if t.rank == args.topic_rank), None)
         if topic is None:
-            print(f"榜上没有第 {args.topic_rank} 名")
-            return 1
+            orig = next((t for t in all_topics if t.rank == args.topic_rank), None)
+            if orig is not None:
+                print(f"第 {args.topic_rank} 名话题含政治内容"
+                      f"(命中: {political_reason(orig.word)}), 已按规则跳过")
+            else:
+                print(f"榜上没有第 {args.topic_rank} 名(或已被过滤/用过)")
+            return 0
     else:
         topic = dedup.pick_unused(topics)
         if topic is None:

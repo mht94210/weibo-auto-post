@@ -14,6 +14,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
+from content_filter import filter_political, is_political
 from generator import ANGLES, generate
 from hotsearch import fetch_hot_top, now_beijing_iso
 from images import make_title_card
@@ -44,9 +45,16 @@ def main() -> int:
         ok = False
         topics, source = [], "failed"
 
-    # 2. 生成样例文案(用第 1 名, 全部 5 个角度各生成 1 条, 检查长度/话题)
-    if topics:
-        t0 = topics[0]
+    # 1b. 内容过滤: 政治话题不发(用户规则 2026-11-18)
+    kept, skipped = filter_political(topics)
+    for t, reason in skipped:
+        log(f"    跳过政治话题: 第{t.rank}名 {t.word} (命中: {reason})")
+    log(f"[1b] 内容过滤 OK: 前十 {len(topics)} 条, 拦下 {len(skipped)} 条, 剩余 {len(kept)} 条")
+    sample_topic = kept[0] if kept else None
+
+    # 2. 生成样例文案(用第一个非政治话题, 全部 5 个角度各生成 1 条, 检查长度/话题)
+    if sample_topic:
+        t0 = sample_topic
         log(f"[2] 样例文案(话题: {t0.word}):")
         for name, _ in ANGLES:
             text, used = generate(t0, angle=name, rng=rng)
@@ -59,9 +67,9 @@ def main() -> int:
 
     # 3. 配图占位(PIL 标题卡)
     image_path = None
-    if topics:
+    if sample_topic:
         try:
-            image_path = make_title_card(topics[0], BASE / "data" / "images", rng=rng)
+            image_path = make_title_card(sample_topic, BASE / "data" / "images", rng=rng)
             size = image_path.stat().st_size
             log(f"[3] 配图 OK: {image_path} ({size} 字节, 1080x720 标题卡, 无爬图/无去水印)")
         except Exception as e:  # noqa: BLE001
@@ -70,8 +78,8 @@ def main() -> int:
 
     # 4. dry-run 发文日志
     poster = WeiboPoster(dry_run=True, log_path=BASE / "logs" / "post_log.jsonl")
-    text = topics[0].word if topics else "测试"
-    sample_text, _ = generate(topics[0], rng=rng) if topics else ("测试", "")
+    text = sample_topic.word if sample_topic else "测试"
+    sample_text, _ = generate(sample_topic, rng=rng) if sample_topic else ("测试", "")
     res = poster.post(sample_text, image_path)
     log(f"[4] dry-run 发文 OK: ok={res.ok}, dry_run={res.dry_run}, "
         f"日志已写 logs/post_log.jsonl (未向微博发请求)")
@@ -87,6 +95,23 @@ def main() -> int:
         f"账号固定分配 {proxy_for_account(proxies, 'weibo_account_1')}")
     dedup = TopicDedup(BASE / "data" / "used_topics.json")
     log(f"[5] 话题去重 OK: 当天已用 {len(dedup.state['used'])} 个")
+
+    # 6. 政治过滤固定用例(不依赖实时榜)
+    cases = [
+        ("习近平迎接美国总统特朗普", True),
+        ("美国总统特朗普抵达深圳", True),
+        ("俄乌冲突最新进展", True),
+        ("台海局势", True),
+        ("外交部回应", True),
+        ("国产大飞机首飞成功", False),
+        ("周杰伦演唱会抢票", False),
+        ("大熊猫花花太可爱了", False),
+    ]
+    for word, want_block in cases:
+        got = is_political(word)
+        assert got == want_block, f"过滤误判: {word} 应{'拦' if want_block else '放'}, 实际{'拦' if got else '放'}"
+        log(f"    {'拦' if got else '放'}: {word}")
+    log("[6] 政治过滤 OK: 8 个固定用例全部符合预期")
 
     log(f"结果: {'全部通过' if ok else '有失败项, 见上'}")
     (BASE / "TEST_REPORT.md").write_text(
