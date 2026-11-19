@@ -15,7 +15,7 @@ BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
 from content_filter import filter_political, is_political
-from generator import ANGLES, generate
+from generator import generate
 from hotsearch import fetch_hot_top, now_beijing_iso
 from images import make_title_card
 from poster import WeiboPoster
@@ -52,16 +52,17 @@ def main() -> int:
     log(f"[1b] 内容过滤 OK: 前十 {len(topics)} 条, 拦下 {len(skipped)} 条, 剩余 {len(kept)} 条")
     sample_topic = kept[0] if kept else None
 
-    # 2. 生成样例文案(用第一个非政治话题, 全部 5 个角度各生成 1 条, 检查长度/话题)
+    # 2. 生成样例文案(用第一个非政治话题, 生成 3 条, 检查长度/话题;
+    # 旧版 generator 的 ANGLES 已删除, 现在 generate() 不分角度, 固定返回"话题写文")
     if sample_topic:
         t0 = sample_topic
         log(f"[2] 样例文案(话题: {t0.word}):")
-        for name, _ in ANGLES:
-            text, used = generate(t0, angle=name, rng=rng)
+        for i in range(3):
+            text, used = generate(t0, rng=rng)
             assert t0.word in text or "#" in text, "文案缺少话题"
             assert len(text) <= 140, f"文案超 140 字: {len(text)}"
             log(f"    [{used}] {len(text)}字: {text}")
-        log("[2] 文案 OK: 5 个角度均 <=140 字, 均含话题")
+        log("[2] 文案 OK: 3 条均 <=140 字, 均含话题")
     else:
         log("[2] SKIP: 无热搜数据")
 
@@ -106,12 +107,19 @@ def main() -> int:
         ("国产大飞机首飞成功", False),
         ("周杰伦演唱会抢票", False),
         ("大熊猫花花太可爱了", False),
+        # 2026-11-19 用户规则: 城市名 + "发布" 同时出现才拦
+        ("深圳倡议发布", True),
+        ("上海新品发布会", True),
+        ("广州发布暴雨预警", True),
+        ("上海迪士尼", False),
+        ("新专辑发布", False),
+        ("北京发布会现场", True),
     ]
     for word, want_block in cases:
         got = is_political(word)
         assert got == want_block, f"过滤误判: {word} 应{'拦' if want_block else '放'}, 实际{'拦' if got else '放'}"
         log(f"    {'拦' if got else '放'}: {word}")
-    log("[6] 政治过滤 OK: 8 个固定用例全部符合预期")
+    log("[6] 政治过滤 OK: 14 个固定用例全部符合预期")
 
     log(f"结果: {'全部通过' if ok else '有失败项, 见上'}")
     (BASE / "TEST_REPORT.md").write_text(
